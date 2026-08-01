@@ -30,6 +30,85 @@
 | ArgoCD | GitOps | — | ❌ 进阶（见 advanced/） |
 | Terraform | 基础设施即代码 | — | ❌ 进阶（见 advanced/） |
 
+## 四、项目亮点与概述
+
+### 项目亮点
+
+| 亮点 | 说明 |
+|------|------|
+| 零硬编码 | `setup-env.sh` 自动检测 Docker 网关，换台电脑直接跑 |
+| Makefile 封装 | `make up` / `make test` / `make down` 一键操作 |
+| 一键恢复 | `make up` 处理镜像预拉取、Kind 镜像导入、端口转发重建，15 分钟从零到完整环境 |
+| 数据不丢 | Prometheus / Grafana / ES / Jenkins 全部配置 Named Volume |
+| 生产可迁移 | 所有 YAML 和脚本可直接搬到阿里云 ACK / AWS EKS / 腾讯云 TKE |
+| 安全加固 | `.env` 权限 600、日志轮转、NetworkPolicy 隔离 [v5 新增] |
+| 备份恢复 | `make backup` / `restore` 一键备份/恢复核心数据 |
+| 一键诊断 | `make diagnose` 自动收集日志、状态、资源占用 |
+| Helm 封装 [v5] | 业务应用提供完整 Helm Chart，支持多环境 Value 覆盖 |
+| 镜像安全 [v5] | 集成 Trivy 镜像扫描、Cosign 镜像签名，构建阶段拦截漏洞 |
+| AI 演进方向 | 规划接入智能告警降噪、日志异常检测、容量预测 |
+
+### 核心能力
+
+| 模块 | 技术组件 | 能力说明 |
+|------|---------|---------|
+| CI/CD | Jenkins + Registry | 代码提交后自动构建镜像、推送仓库、滚动更新 K8s 部署 |
+| 监控 | Prometheus + Grafana | 实时采集宿主机与 K8s 集群指标，可视化仪表盘展示 |
+| 日志 | Fluentd + Elasticsearch + Kibana | 容器日志统一收集、持久化存储、全文检索分析 |
+| 告警 | Prometheus + Alertmanager | Pod 异常重启、组件宕机、磁盘/内存/节点压力时实时邮件通知 |
+| GitOps [v5] | ArgoCD + Helm | 声明式持续交付，Git 为唯一可信源，自动同步、回滚 |
+| 安全 [v5] | Trivy + Cosign + NetworkPolicy | 镜像漏洞扫描、签名验证、网络微隔离 |
+
+### 为什么从本地环境开始?
+
+**云服务器的问题:**
+- 云服务按小时计费，折腾坏了心疼钱
+- 网络环境复杂 (安全组、VPC、公网 IP)，问题排查困难
+- 一旦搞砸了，重装系统成本高
+
+**本地环境 (Kind + Docker Compose) 的优势:**
+- **零成本**: 不用买服务器，在自己电脑上就能跑
+- **恢复快**: 搞坏了 `make down` 一键清理，`make up` 10 分钟重建
+- **可迁移**: 本地跑通的 YAML 和脚本，原封不动搬到阿里云、腾讯云、AWS 都能用
+- **安全实验**: 本地可以大胆尝试 NetworkPolicy、安全策略等高风险操作
+
+## 五、架构设计
+
+### 逻辑拓扑
+
+![逻辑拓扑](docs/images/architecture-logical.png)
+
+### 物理部署视图
+
+![物理部署视图](docs/images/architecture-physical.png)
+
+### 网络设计要点 (新手必看)
+
+| 数据流向 | 为什么这样设计 |
+|---------|--------------|
+| Prometheus → kube-state-metrics | Prometheus 在 K8s 外部，无法直接访问集群内部 Service。通过 `kubectl port-forward` 建立"隧道"，把内部端口映射到宿主机，Prometheus 才能抓取数据。 |
+| Fluentd → Elasticsearch | Fluentd 在 K8s 内部 (DaemonSet)，ES 在外部且已暴露 9200 端口。内部 Pod 可以直接通过宿主机网关访问外部服务，不需要隧道。 |
+| Jenkins → K8s API | Jenkins 容器内挂载了 `~/.kube` 和 kubectl，通过宿主机网络访问 Kind 集群 API Server。 |
+| 业务 Pod → Registry | 通过 `${DOCKER_GATEWAY}:5000` 拉取镜像，Kind 的 containerd 已配置信任该 HTTP 仓库。 |
+| [v5] Pod 间通信 | 通过 NetworkPolicy 限制，仅允许必要的流量，实现零信任网络。 |
+
+> **一句话总结**: 谁在外面、谁想进去，谁就需要隧道。
+
+### 端口速查表
+
+| 端口 | 服务 | 谁访问它 | 备注 |
+|------|------|---------|------|
+| 8080 | kube-state-metrics | Prometheus (外部容器) | 通过 kubectl port-forward 暴露到宿主机 |
+| 8081 | Jenkins | 用户浏览器 | 初始密码需 docker exec 获取 |
+| 5000 | Registry | Kind 节点 / Jenkins | HTTP 协议，无认证 (本地简化) |
+| 9090 | Prometheus | 用户浏览器 / Grafana | 自带 Web UI，可执行 PromQL |
+| 9093 | Alertmanager | Prometheus / 用户浏览器 | 接收告警、管理静默/抑制 |
+| 9200 | Elasticsearch | Fluentd / Kibana / 用户 | 单节点模式，无安全认证 |
+| 5601 | Kibana | 用户浏览器 | 依赖 ES，启动较慢需等待 |
+| 9100 | Node Exporter | Prometheus | 采集宿主机 CPU/内存/磁盘/网络 |
+| 3000 | Grafana | 用户浏览器 | 默认账号 admin/admin |
+| [v5] 8443 | ArgoCD | 用户浏览器 | GitOps 控制台 (生产环境) |
+
 ## 下载后第一步（必须执行）
 
 ```bash
@@ -133,7 +212,7 @@ Phase 3: CI/CD 流水线（+2GB 内存）
 ├── .github/workflows/ci.yml    # CI 工作流（GitHub 自动检查）
 ├── CHANGELOG.md
 ├── LICENSE
-└── README.md
+└── README.md                   # 本文件
 ```
 
 > **初学者只需要关注根目录和 scripts/ 目录的文件。**  
