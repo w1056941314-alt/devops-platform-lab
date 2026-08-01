@@ -1,0 +1,84 @@
+# ============================================================================
+# 文件: network-policy.yaml
+# 作用: 限制 Pod 间的网络通信，实现"零信任"安全模型
+#
+# 什么是 NetworkPolicy:
+#   K8s 的网络默认是"全通"的，任何 Pod 可以访问任何 Pod
+#   NetworkPolicy 通过标签选择器控制流量，实现微隔离
+#
+# 核心概念:
+#   podSelector: 选择哪些 Pod 应用这个策略
+#   policyTypes: 策略类型（Ingress=入站, Egress=出站）
+#   ingress: 允许谁访问我
+#   egress: 允许我访问谁
+#
+# 注意:
+#   NetworkPolicy 需要 CNI 插件支持（Calico/Cilium/Weave）
+#   Kind 默认的 CNI（kindnet）支持基本的 NetworkPolicy
+#   如果策略不生效，检查 CNI 插件是否支持
+#
+# 用法:
+#   kubectl apply -f network-policy.yaml
+#   kubectl get networkpolicy
+#   kubectl describe networkpolicy nginx-demo-network-policy
+# ============================================================================
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  # 策略名称
+  name: nginx-demo-network-policy
+  # 作用域: default 命名空间
+  namespace: default
+spec:
+  # podSelector: 这个策略应用到哪些 Pod
+  # {} 空对象表示"匹配所有 Pod"，但通常应该精确匹配
+  # 这里匹配标签 app=nginx-demo-pod 的 Pod
+  podSelector:
+    matchLabels:
+      app: nginx-demo-pod
+  # policyTypes: 同时管控入站和出站流量
+  policyTypes:
+    - Ingress    # 入站: 谁可以访问 nginx-demo Pod
+    - Egress     # 出站: nginx-demo Pod 可以访问谁
+
+  # ingress: 入站规则（允许进入 Pod 的流量）
+  ingress:
+    # from: [] 空列表 = 允许所有来源（因为下面有 ports 限制，所以不是完全开放）
+    # 如果要限制特定来源，可以写:
+    #   - from:
+    #       - namespaceSelector:
+    #           matchLabels:
+    #             name: ingress-nginx
+    - from: []
+      ports:
+        # 只允许 TCP 80 端口的流量（HTTP）
+        - protocol: TCP
+          port: 80
+
+  # egress: 出站规则（允许 Pod 发出的流量）
+  egress:
+    # 规则 1: 允许访问 DNS（UDP 53）
+    # 为什么需要: Pod 需要解析域名（如 elasticsearch、registry 的服务名）
+    - to: []
+      ports:
+        - protocol: UDP
+          port: 53
+    # 规则 2: 允许访问 Registry（TCP 5000）
+    # 为什么需要: 如果 Pod 需要拉取自定义镜像（如 InitContainer）
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 5000
+    # 规则 3: 允许访问 Elasticsearch（TCP 9200）
+    # 为什么需要: Sidecar 或应用本身需要发送日志到 ES
+    - to: []
+      ports:
+        - protocol: TCP
+          port: 9200
+
+# 安全建议（生产环境）:
+#   1. 默认拒绝所有流量，然后逐步开放
+#   2. 使用 namespaceSelector 限制来源命名空间
+#   3. 使用 podSelector 限制来源 Pod
+#   4. 结合 Calico/Cilium 实现更细粒度的控制

@@ -1,0 +1,36 @@
+# ============================================================================
+# 文件: gitops/app-of-apps.yaml
+# 作用: "应用的应用"模式，用一个 ArgoCD Application 管理所有其他 Application
+#
+# 为什么需要:
+#   当你有 10 个微服务、3 个环境（dev/staging/prod）时
+#   手动管理 30 个 ArgoCD Application 很混乱
+#   app-of-apps 模式: 一个"父应用"管理所有"子应用"
+#
+# 数据流向:
+#   Git 仓库中的 gitops/applications/ 目录
+#     -> app-of-apps 同步到 ArgoCD
+#     -> ArgoCD 自动创建 dev.yaml、prod.yaml 等子应用
+#     -> 子应用同步各自的 Helm Chart 到集群
+# ============================================================================
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: app-of-apps
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/yourcompany/gitops-repo.git
+    targetRevision: HEAD
+    # path: 这个目录下包含多个 Application YAML 文件
+    # ArgoCD 会自动创建目录下的每个 Application
+    path: gitops/applications
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

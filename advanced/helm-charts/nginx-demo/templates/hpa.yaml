@@ -1,0 +1,42 @@
+# ============================================================================
+# 文件: hpa.yaml
+# 作用: HorizontalPodAutoscaler 模板，实现自动扩缩容
+#
+# 什么是 HPA:
+#   根据 CPU/内存使用率自动增加或减少 Pod 副本数
+#   流量高时自动扩容，流量低时自动缩容，节省资源
+#
+# 工作原理:
+#   1. Metrics Server 采集 Pod 的 CPU/内存使用率
+#   2. HPA 控制器计算需要多少个副本
+#   3. 调整 Deployment 的 replicas 字段
+#
+# 条件渲染: 如果 values.yaml 中 autoscaling.enabled = true 才创建
+# ============================================================================
+
+{{- if .Values.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "nginx-demo.fullname" . }}
+  labels:
+    {{- include "nginx-demo.labels" . | nindent 4 }}
+spec:
+  # scaleTargetRef: 控制哪个 Deployment 的副本数
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "nginx-demo.fullname" . }}
+  # minReplicas/maxReplicas: 副本数范围
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  # metrics: 扩缩容依据的指标
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # 当 CPU 使用率超过这个百分比时，开始扩容
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

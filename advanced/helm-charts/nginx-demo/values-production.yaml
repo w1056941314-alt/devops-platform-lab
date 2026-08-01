@@ -1,0 +1,67 @@
+# ============================================================================
+# 文件: values-production.yaml
+# 作用: 生产环境的 Helm Chart 配置（覆盖 values.yaml 的默认值）
+#
+# 和开发环境的区别:
+#   - 副本数: 3（高可用，单个节点故障不影响服务）
+#   - 镜像: 使用私有 Harbor 仓库（安全、可控）
+#   - 资源: 更高的 CPU/内存限制（应对生产流量）
+#   - HPA: 启用自动扩缩容（应对流量波动）
+#   - NetworkPolicy: 更严格的网络隔离（只允许 ingress-nginx 访问）
+#
+# 用法:
+#   helm install nginx-prod ./helm-charts/nginx-demo -f values-production.yaml
+# ============================================================================
+
+replicaCount: 3
+
+image:
+  # 使用私有 Harbor 仓库（需要 docker login 认证）
+  repository: harbor.yourcompany.com/nginx-demo
+  # 生产环境用 latest 配合镜像签名验证（确保部署的是可信镜像）
+  tag: "latest"
+  # Always: 确保每次部署都拉取最新镜像（配合 CI/CD 流水线）
+  pullPolicy: Always
+
+resources:
+  limits:
+    cpu: 1000m          # 最多 1 核 CPU（应对高并发）
+    memory: 512Mi       # 最多 512MB 内存
+  requests:
+    cpu: 500m           # 至少 0.5 核 CPU（确保调度到足够资源的节点）
+    memory: 256Mi       # 至少 256MB 内存
+
+autoscaling:
+  enabled: true         # 启用自动扩缩容
+  minReplicas: 3          # 最少 3 个副本（高可用）
+  maxReplicas: 20         # 最多 20 个副本（应对流量高峰）
+  targetCPUUtilizationPercentage: 70  # CPU 超过 70% 就扩容（比开发环境更敏感）
+
+networkPolicy:
+  enabled: true
+  ingress:
+    # 只允许 ingress-nginx 命名空间的 Pod 访问（通过 Ingress Controller）
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 80
+  egress:
+    # 只允许访问 kube-system 命名空间的 DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+    # 只允许访问 monitoring 命名空间的 ES
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9200

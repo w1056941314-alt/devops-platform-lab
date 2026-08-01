@@ -1,0 +1,85 @@
+# ============================================================================
+# 文件: gitops/application.yaml
+# 作用: ArgoCD Application 定义，实现 GitOps 持续交付
+#
+# 什么是 GitOps:
+#   以 Git 仓库为唯一可信源，所有配置变更通过 Git 提交
+#   ArgoCD 自动检测 Git 仓库和集群状态的差异，自动同步
+#
+# 优势:
+#   1. 变更可追溯: Git 提交记录 = 变更审计日志
+#   2. 回滚简单: git revert 即可回滚到上一个版本
+#   3. 多环境一致: dev/staging/prod 用同一套模板，不同 values
+#   4. 自动同步: 代码合并后自动部署，无需手动 kubectl apply
+#
+# 用法:
+#   1. 安装 ArgoCD: kubectl create namespace argocd && kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+#   2. 应用本配置: kubectl apply -f gitops/application.yaml
+#   3. 访问 ArgoCD UI: kubectl port-forward svc/argocd-server -n argocd 8080:443
+# ============================================================================
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  # 应用名称: 在 ArgoCD UI 中显示的名字
+  name: nginx-demo
+  # 命名空间: ArgoCD 自身运行的命名空间
+  namespace: argocd
+  # finalizers: 删除 Application 时同时删除关联的 K8s 资源
+  # 防止"删了 ArgoCD 但应用还在跑"的幽灵资源问题
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  # project: ArgoCD 项目（默认 default，用于权限隔离）
+  project: default
+
+  # source: Git 仓库配置（唯一可信源）
+  source:
+    # repoURL: Git 仓库地址（改成你自己的）
+    # 支持 HTTPS、SSH、GitHub/GitLab 等
+    repoURL: https://github.com/yourcompany/gitops-repo.git
+    # targetRevision: 跟踪哪个分支（HEAD = 最新提交）
+    targetRevision: HEAD
+    # path: 仓库中 Helm Chart 的路径
+    path: helm-charts/nginx-demo
+    # helm: Helm 特定配置
+    helm:
+      # valueFiles: 使用哪个 values 文件覆盖默认值
+      valueFiles:
+        - values-production.yaml
+      # parameters: 额外的参数覆盖（优先级高于 valueFiles）
+      parameters:
+        - name: image.tag
+          value: "1.27-alpine"
+
+  # destination: 部署到哪个集群和命名空间
+  destination:
+    # server: 目标集群 API 地址
+    # https://kubernetes.default.svc 表示当前集群（ArgoCD 所在的集群）
+    server: https://kubernetes.default.svc
+    # namespace: 部署到的命名空间
+    namespace: default
+
+  # syncPolicy: 同步策略（自动同步配置）
+  syncPolicy:
+    automated:
+      # prune: true = 如果 Git 中删除了资源，集群中也自动删除
+      prune: true
+      # selfHeal: true = 如果有人在集群中手动修改了资源，ArgoCD 自动恢复为 Git 中的状态
+      selfHeal: true
+      # allowEmpty: false = 不允许同步后没有任何资源（防止误删全部）
+      allowEmpty: false
+    syncOptions:
+      # CreateNamespace=true: 如果目标命名空间不存在，自动创建
+      - CreateNamespace=true
+      # PrunePropagationPolicy=foreground: 删除资源时等待依赖资源先删除
+      - PrunePropagationPolicy=foreground
+      # PruneLast=true: 最后执行删除操作（确保新资源先创建）
+      - PruneLast=true
+    # retry: 同步失败时自动重试
+    retry:
+      limit: 5                        # 最多重试 5 次
+      backoff:
+        duration: 5s                  # 首次等待 5 秒
+        factor: 2                     # 每次翻倍（5s -> 10s -> 20s...）
+        maxDuration: 3m               # 最长等待 3 分钟

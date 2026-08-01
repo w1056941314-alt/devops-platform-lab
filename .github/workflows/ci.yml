@@ -1,0 +1,94 @@
+# ============================================================================
+# 文件: .github/workflows/ci.yml
+# 作用: GitHub Actions 持续集成工作流
+#
+# 什么是 CI:
+#   每次 push 代码或提交 PR 时，自动运行测试和检查
+#   确保代码质量，防止"在我电脑上能跑"的问题
+#
+# 触发条件:
+#   push 到 main/develop 分支 或 提交 PR 到 main 分支时自动触发
+#
+# 包含任务:
+#   1. lint: 检查 Helm Chart 语法、docker-compose 配置、Shell 脚本质量
+#   2. test: 在 Kind 集群中验证 K8s 清单和 Helm 模板
+# ============================================================================
+
+# name: 工作流名称，显示在 GitHub Actions 页面
+name: CI
+
+# on: 触发条件
+on:
+  push:
+    # 只有 push 到 main 或 develop 分支时才触发
+    branches: [ main, develop ]
+  pull_request:
+    # 提交 PR 到 main 分支时触发（确保合并前代码质量）
+    branches: [ main ]
+
+# jobs: 要执行的任务列表
+jobs:
+  # ---------- Job 1: 代码检查 ----------
+  lint:
+    # runs-on: 在哪个环境运行（GitHub 提供的 Ubuntu 虚拟机）
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout@v4: 检出代码到工作目录
+      - uses: actions/checkout@v4
+
+      # 步骤 1: 检查 Helm Chart 语法
+      - name: Lint Helm Chart
+        # azure/setup-helm@v4: 安装 Helm 工具
+        uses: azure/setup-helm@v4
+        with:
+          version: 'latest'
+      # helm lint: 检查 Chart 语法错误、必填字段缺失、模板渲染问题
+      - run: helm lint advanced/helm-charts/nginx-demo
+
+      # 步骤 2: 验证 docker-compose.yml 语法
+      - name: Validate docker-compose
+        # docker compose config: 解析并验证 docker-compose.yml，不实际启动容器
+        # 可以捕获 YAML 语法错误、服务名冲突、卷名错误等
+        run: |
+          docker compose -f docker-compose.yml config
+
+      # 步骤 3: Shell 脚本质量检查
+      - name: ShellCheck
+        # ludeeus/action-shellcheck: 使用 ShellCheck 工具检查 Bash 脚本
+        # ShellCheck 是静态分析工具，能发现常见的 Shell 脚本 Bug
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: './scripts'          # 检查 scripts/ 目录下的所有脚本
+        env:
+          # SHELLCHECK_OPTS: 忽略 SC1091 警告（source 外部文件时找不到路径）
+          # 因为 CI 环境中没有 .env 文件，source .env 会报错
+          SHELLCHECK_OPTS: -e SC1091
+
+  # ---------- Job 2: K8s 测试 ----------
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 步骤 1: 创建 Kind 集群（在 GitHub Actions 中跑 K8s）
+      - name: Setup Kind
+        # helm/kind-action@v1: 官方 Kind GitHub Action
+        uses: helm/kind-action@v1
+        with:
+          version: v0.27.0              # 指定 Kind 版本，确保一致性
+
+      # 步骤 2: 验证 K8s 清单（dry-run 模式，不实际部署）
+      - name: Test K8s manifests
+        # kubectl apply --dry-run=client: 在客户端验证 YAML 语法和 API 兼容性
+        # 不连接集群，只检查 YAML 格式和字段是否正确
+        run: |
+          kubectl apply --dry-run=client -f app-deployment.yaml
+          kubectl apply --dry-run=client -f fluentd-daemonset.yaml
+          kubectl apply --dry-run=client -f network-policy.yaml
+
+      # 步骤 3: 验证 Helm 模板渲染
+      - name: Test Helm Chart
+        # helm template: 渲染 Helm 模板，输出完整的 K8s YAML
+        # > /dev/null: 不输出到屏幕，只检查是否有渲染错误
+        run: |
+          helm template nginx-test advanced/helm-charts/nginx-demo > /dev/null

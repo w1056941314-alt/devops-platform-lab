@@ -1,0 +1,21 @@
+# 文件: kind-config.yaml
+# 作用: 定义 Kind 集群的节点结构和 containerd 配置
+# 重要: 本文件中的 __DOCKER_GATEWAY__ 是占位符
+#       运行 setup-env.sh 后会自动替换为实际的 Docker 网关地址
+#       不要手动修改此占位符！
+# ===================================================================
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  # control-plane = K8s 的 Master 节点，负责调度、API 服务等
+  - role: control-plane
+  # worker = K8s 的工作节点，负责运行业务 Pod
+  - role: worker
+
+# containerdConfigPatches: 给 containerd 打补丁
+# 让 containerd 信任本地的 HTTP 镜像仓库，否则拉镜像会失败
+# __DOCKER_GATEWAY__ 会被 setup-env.sh 替换为实际网关地址（如 172.17.0.1）
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."__DOCKER_GATEWAY__:5000"]
+      endpoint = ["http://__DOCKER_GATEWAY__:5000"]

@@ -1,0 +1,34 @@
+# ============================================================================
+# 文件: gitops/applications/prod.yaml
+# 作用: 生产环境的 ArgoCD Application
+#
+# 和开发的区别:
+#   - targetRevision: main 分支（稳定分支）
+#   - valueFiles: values-production.yaml（高可用配置）
+#   - namespace: production（独立命名空间）
+#   - syncOptions: 自动创建命名空间
+# ============================================================================
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nginx-demo-prod
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/yourcompany/gitops-repo.git
+    targetRevision: main              # 跟踪 main 分支（经过测试的稳定代码）
+    path: helm-charts/nginx-demo
+    helm:
+      valueFiles:
+        - values-production.yaml       # 使用生产环境配置（replicas=3，资源限制高，HPA启用）
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: production             # 部署到 production 命名空间
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true           # 自动创建 production 命名空间（如果不存在）

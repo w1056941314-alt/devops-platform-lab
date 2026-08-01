@@ -1,0 +1,116 @@
+# ============================================================================
+# 文件: app-deployment.yaml
+# 作用: 在 K8s 中部署一个 Nginx 业务应用，附带日志生成 Sidecar
+#
+# 什么是 Deployment: K8s 用来管理 Pod 的控制器，支持滚动更新、扩缩容、自愈
+# 什么是 Sidecar: 同一个 Pod 里跑多个容器，共享网络和存储，但各自独立
+#
+# 用法:
+#   kubectl apply -f app-deployment.yaml    # 创建/更新部署
+#   kubectl get pods -l app=nginx-demo-pod  # 查看 Pod 状态
+#   kubectl delete -f app-deployment.yaml   # 删除部署
+#
+# 预期输出:
+#   NAME                          READY   STATUS    RESTARTS   AGE
+#   nginx-demo-xxxxxxxxx-yyyyy    2/2     Running   0          30s
+# ============================================================================
+
+# API 版本: apps/v1 是 Deployment 的稳定版本
+apiVersion: apps/v1
+# 资源类型: Deployment 表示"期望状态是 N 个 Pod 副本"
+kind: Deployment
+# 元数据: 名字、标签等标识信息
+metadata:
+  # 部署的名称，kubectl get deployment 时显示的名字
+  name: nginx-demo
+  # 命名空间: 逻辑隔离环境，default 是默认命名空间
+  namespace: default
+# 规格: 定义 Deployment 的期望状态
+spec:
+  # 副本数: 期望同时运行 1 个 Pod（生产环境通常 3+）
+  replicas: 1
+  # 选择器: 告诉 Deployment "哪些 Pod 归我管"
+  selector:
+    matchLabels:
+      # 匹配标签为 app=nginx-demo-pod 的 Pod
+      # 注意: 下面的 template.metadata.labels 必须有相同的标签
+      app: nginx-demo-pod
+  # Pod 模板: Deployment 创建的每个 Pod 都长这样
+  template:
+    metadata:
+      # Pod 的标签，必须和 selector.matchLabels 一致
+      labels:
+        app: nginx-demo-pod
+    # Pod 规格: 定义容器、卷、网络等
+    spec:
+      # containers: 这个 Pod 里跑哪些容器
+      containers:
+        # ---------- 主容器: Nginx Web 服务器 ----------
+        - name: nginx
+          # 镜像: nginx:1.27-alpine
+          # 为什么用 alpine: 体积小(~10MB vs Ubuntu >100MB)，攻击面小，拉取快
+          image: nginx:1.27-alpine
+          # 暴露的端口: 容器内监听 80 端口
+          ports:
+            - containerPort: 80
+          # 存活探针（Liveness Probe）:
+          # 作用: 如果 Nginx 挂了（进程还在但无响应），K8s 会自动重启容器
+          # 为什么需要: 进程没死但应用假死时，K8s 不会自动处理，需要探针
+          livenessProbe:
+            httpGet:
+              path: /           # 访问根路径
+              port: 80          # 在 80 端口上探测
+            initialDelaySeconds: 10  # Pod 启动后等 10 秒再开始探测（给应用启动时间）
+            periodSeconds: 10        # 每 10 秒探测一次
+          # 就绪探针（Readiness Probe）:
+          # 作用: 如果应用还没准备好接收流量（如正在加载配置），K8s 不会把请求发给它
+          # 和 Liveness 的区别: Liveness 决定"是否重启"，Readiness 决定"是否接收流量"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5   # 比 Liveness 更早开始探测
+            periodSeconds: 5           # 探测更频繁，尽快标记为就绪
+          # 资源限制: 防止某个容器吃光节点资源，影响其他 Pod
+          resources:
+            requests:
+              # 请求: K8s 调度时保证这个 Pod 至少有 64MB 内存和 0.1 核 CPU
+              # 如果节点资源不够，Pod 不会被调度到该节点
+              memory: "64Mi"
+              cpu: "100m"       # 100m = 0.1 核 = 10% 的 CPU
+            limits:
+              # 限制: 这个 Pod 最多只能用 128MB 内存和 0.2 核 CPU
+              # 超过内存限制会被 OOMKilled（Out Of Memory Killed）
+              memory: "128Mi"
+              cpu: "200m"       # 200m = 0.2 核
+
+        # ---------- Sidecar 容器: 日志生成器 ----------
+        # 为什么用 Sidecar 而不是在主容器里生成日志:
+        # 1. 职责分离: Nginx 只负责服务，日志生成是测试数据
+        # 2. 独立资源限制: Sidecar 崩溃不影响主服务
+        # 3. 模拟真实场景: 生产环境业务容器 + 辅助容器（如日志采集 Agent）
+        - name: log-generator
+          image: busybox:1.36    # 超小镜像，只有基础 shell 工具
+          command: ["/bin/sh"]   # 入口命令: /bin/sh
+          args:
+            - -c                 # -c 表示执行后面的字符串命令
+            # 下面的脚本: 无限循环，随机生成 INFO/WARN/ERROR 级别的 JSON 日志
+            # 为什么用 JSON: 结构化日志便于 Fluentd/ES 解析和检索
+            - |
+              while true; do
+                # 随机选择一个日志级别
+                LEVEL=$(echo -e "INFO\nWARN\nERROR" | awk 'BEGIN{srand();}{print rand()" "$0}' | sort -k1 | head -1 | cut -f2)
+                # 生成一个 UUID 作为 trace_id，模拟分布式追踪
+                TRACE_ID=$(cat /proc/sys/kernel/random/uuid)
+                # 输出 JSON 格式日志，包含级别、追踪ID、消息、时间戳
+                echo "{"level":"$LEVEL","trace_id":"$TRACE_ID","msg":"处理请求","time":"$(date -Iseconds)"}"
+                # 随机睡眠 1-5 秒，模拟真实请求的间隔
+                sleep $((RANDOM % 5 + 1))
+              done
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "50m"
+            limits:
+              memory: "64Mi"
+              cpu: "100m"

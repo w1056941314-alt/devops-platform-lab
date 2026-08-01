@@ -1,0 +1,64 @@
+# ============================================================================
+# 文件: prometheus.yml
+# 作用: 配置 Prometheus 的抓取目标、告警规则路径、全局参数
+#
+# Prometheus 工作流程:
+#   1. 按照 scrape_configs 中的配置，定期访问各个 target 的 /metrics 端点
+#   2. 把抓取到的数据存入本地时序数据库（TSDB）
+#   3. 按照 rule_files 中的规则，定期评估是否触发告警
+#   4. 触发的告警推送给 alerting.alertmanagers 中配置的 Alertmanager
+#
+# 用法:
+#   修改后 Prometheus 会自动热加载（无需重启）
+#   验证配置: promtool check config prometheus.yml
+# ============================================================================
+
+# global: 全局默认配置，可以被单个 job 覆盖
+global:
+  # scrape_interval: 多久抓取一次数据（默认 15 秒）
+  # 太短会增加网络和 CPU 开销，太长会延迟发现问题
+  scrape_interval: 15s
+  # evaluation_interval: 多久评估一次告警规则（默认 15 秒）
+  evaluation_interval: 15s
+
+# alerting: 告警配置
+alerting:
+  alertmanagers:
+    # static_configs: 静态配置 Alertmanager 地址
+    # 生产环境通常用服务发现（如 DNS、K8s Service）
+    - static_configs:
+        # alertmanager:9093: Docker Compose 内通过服务名解析
+        # 如果 Alertmanager 有多个实例，可以写多个地址实现高可用
+        - targets: ['alertmanager:9093']
+
+# rule_files: 告警规则文件路径（相对于 prometheus.yml 的位置）
+# 可以配置多个文件，Prometheus 会加载所有规则
+rule_files:
+  - "/etc/prometheus/alert.rules.yml"
+
+# scrape_configs: 抓取目标配置（核心配置）
+scrape_configs:
+  # job_name: 任务名称，用于在 Prometheus UI 和查询中标识这组 target
+  - job_name: 'prometheus'
+    # static_configs: 静态配置目标地址
+    static_configs:
+      # localhost:9090: Prometheus 监控自己
+      # 为什么用 localhost: 因为 Prometheus 容器内 localhost 指向自己
+      - targets: ['localhost:9090']
+
+  # job_name: 'node-exporter'
+  # 采集宿主机指标（CPU、内存、磁盘、网络等）
+  - job_name: 'node-exporter'
+    static_configs:
+      # node-exporter:9100: Docker Compose 内通过服务名解析
+      - targets: ['node-exporter:9100']
+
+  # job_name: 'kube-state-metrics'
+  # 采集 K8s 集群状态指标（Pod 数量、Deployment 副本数、Service 等）
+  # 为什么用 ${DOCKER_GATEWAY}:8080:
+  #   kube-state-metrics 在 K8s 内部，Prometheus 在 K8s 外部
+  #   通过 kubectl port-forward 把内部 8080 映射到宿主机 8080
+  #   Prometheus 容器通过宿主机网关访问这个端口
+  - job_name: 'kube-state-metrics'
+    static_configs:
+      - targets: ['${DOCKER_GATEWAY}:8080']

@@ -1,0 +1,29 @@
+# ============================================================================
+# 文件: networkpolicy.yaml
+# 作用: Helm Chart 的 NetworkPolicy 模板
+#
+# 条件渲染: 如果 values.yaml 中 networkPolicy.enabled = true 才创建
+#           这样开发环境可以禁用，生产环境启用
+# ============================================================================
+
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "nginx-demo.fullname" . }}
+  labels:
+    {{- include "nginx-demo.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "nginx-demo.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  # toYaml: 把 values.yaml 中的列表直接渲染为 YAML
+  # nindent 4: 缩进 4 个空格
+  ingress:
+    {{- toYaml .Values.networkPolicy.ingress | nindent 4 }}
+  egress:
+    {{- toYaml .Values.networkPolicy.egress | nindent 4 }}
+{{- end }}

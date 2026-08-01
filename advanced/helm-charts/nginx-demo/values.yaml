@@ -1,0 +1,98 @@
+# ============================================================================
+# 文件: values.yaml
+# 作用: Helm Chart 的默认值（开发环境配置）
+#
+# 什么是 values:
+#   Helm 模板通过 {{ .Values.xxx }} 引用这里的值
+#   部署时可以用 -f 参数覆盖（如 -f values-production.yaml）
+#
+# 用法:
+#   helm install nginx-dev ./helm-charts/nginx-demo              # 使用本文件的默认值
+#   helm install nginx-prod ./helm-charts/nginx-demo -f values-production.yaml  # 覆盖为生产配置
+# ============================================================================
+
+# replicaCount: Pod 副本数
+# 开发环境只需要 1 个副本（节省资源）
+replicaCount: 1
+
+# image: 容器镜像配置
+image:
+  # repository: 镜像仓库地址（开发环境用官方镜像）
+  repository: nginx
+  # tag: 镜像标签（固定版本，避免 latest 漂移）
+  tag: "1.27-alpine"
+  # pullPolicy: 镜像拉取策略
+  #   IfNotPresent: 本地有就不拉取（开发环境快）
+  #   Always: 总是拉取（确保最新）
+  #   Never: 只用本地镜像
+  pullPolicy: IfNotPresent
+
+# service: K8s Service 配置
+service:
+  # type: ClusterIP = 只能在集群内部访问
+  #       NodePort = 通过节点 IP + 端口暴露
+  #       LoadBalancer = 云厂商负载均衡（生产环境）
+  type: ClusterIP
+  # port: Service 暴露的端口
+  port: 80
+
+# resources: 资源限制（开发环境设置较低，节省资源）
+resources:
+  limits:
+    cpu: 200m           # 最多 0.2 核 CPU
+    memory: 128Mi       # 最多 128MB 内存
+  requests:
+    cpu: 100m           # 至少 0.1 核 CPU
+    memory: 64Mi        # 至少 64MB 内存
+
+# livenessProbe: 存活探针配置
+livenessProbe:
+  httpGet:
+    path: /             # 探测路径
+    port: 80            # 探测端口
+  initialDelaySeconds: 10  # 启动后等 10 秒再探测
+  periodSeconds: 10        # 每 10 秒探测一次
+
+# readinessProbe: 就绪探针配置
+readinessProbe:
+  httpGet:
+    path: /
+    port: 80
+  initialDelaySeconds: 5   # 比 Liveness 更早开始
+  periodSeconds: 5           # 探测更频繁
+
+# networkPolicy: 网络策略配置
+networkPolicy:
+  enabled: true             # 启用网络隔离
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 80          # 只允许 80 端口入站
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53          # 允许 DNS 出站
+    - ports:
+        - protocol: TCP
+          port: 5000        # 允许访问 Registry
+    - ports:
+        - protocol: TCP
+          port: 9200        # 允许访问 ES
+
+# autoscaling: 自动扩缩容（开发环境禁用，节省资源）
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80  # CPU 超过 80% 时扩容
+
+# logGenerator: 日志生成器 Sidecar 配置
+logGenerator:
+  enabled: true             # 启用 Sidecar
+  resources:
+    limits:
+      cpu: 100m
+      memory: 64Mi
+    requests:
+      cpu: 50m
+      memory: 32Mi

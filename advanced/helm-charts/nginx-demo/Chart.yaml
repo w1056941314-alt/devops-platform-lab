@@ -1,0 +1,35 @@
+# ============================================================================
+# 文件: Chart.yaml
+# 作用: Helm Chart 的元数据（相当于包的"说明书"）
+#
+# 包含信息:
+#   - Chart 名称、描述、版本
+#   - 应用版本（和 Chart 版本独立）
+#   - 维护者信息
+#   - 依赖的其他 Chart
+#
+# 用法:
+#   helm lint ./helm-charts/nginx-demo    # 检查 Chart 元数据
+#   helm package ./helm-charts/nginx-demo  # 打包为 .tgz 文件
+# ============================================================================
+
+# apiVersion: v2 表示 Helm 3 格式（v1 是 Helm 2，已废弃）
+apiVersion: v2
+# name: Chart 名称（helm install 时引用）
+name: nginx-demo
+# description: Chart 的描述（helm search 时显示）
+description: A Helm chart for nginx-demo application
+# type: application 表示这是应用 Chart（library 表示库 Chart，供其他 Chart 引用）
+type: application
+# version: Chart 版本（遵循 SemVer: 主版本.次版本.补丁版本）
+#   修改模板 -> 升级次版本
+#   修复 Bug -> 升级补丁版本
+#   不兼容变更 -> 升级主版本
+version: 1.0.0
+# appVersion: 应用的版本（和 Chart 版本独立）
+#   比如应用升级到 2.0，但 Chart 模板没变，可以只改 appVersion
+appVersion: "1.27"
+# maintainers: 维护者信息（出了问题找谁）
+maintainers:
+  - name: devops-team
+    email: devops@example.com

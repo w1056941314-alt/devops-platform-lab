@@ -1,0 +1,35 @@
+# ============================================================================
+# 文件: service.yaml
+# 作用: 定义 K8s Service，为 Pod 提供稳定的网络访问入口
+#
+# 为什么需要 Service:
+#   Pod 的 IP 是动态变化的（重启后可能变），Service 提供一个固定的虚拟 IP
+#   客户端通过 Service 访问 Pod，不需要关心后端 Pod 的具体 IP
+#
+# Service 类型:
+#   ClusterIP: 只能在集群内部访问（默认，最常用）
+#   NodePort: 通过节点 IP + 端口暴露到外部
+#   LoadBalancer: 云厂商负载均衡（生产环境）
+#   ExternalName: DNS 别名
+# ============================================================================
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nginx-demo.fullname" . }}
+  labels:
+    {{- include "nginx-demo.labels" . | nindent 4 }}
+spec:
+  # 类型: 从 values.yaml 读取（默认 ClusterIP）
+  type: {{ .Values.service.type }}
+  ports:
+    # port: Service 暴露的端口（集群内其他 Pod 访问时用）
+    # targetPort: 转发到 Pod 容器的哪个端口（这里是 80）
+    # protocol: TCP（HTTP 默认用 TCP）
+    - port: {{ .Values.service.port }}
+      targetPort: 80
+      protocol: TCP
+  # selector: 选择哪些 Pod 作为后端
+  # 必须和 Deployment 模板中的 selectorLabels 一致
+  selector:
+    {{- include "nginx-demo.selectorLabels" . | nindent 4 }}

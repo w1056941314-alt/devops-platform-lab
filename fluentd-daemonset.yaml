@@ -1,0 +1,137 @@
+# ============================================================================
+# 文件: fluentd-daemonset.yaml
+# 作用: 部署 Fluentd 日志采集器，每个 K8s 节点运行一个实例
+#
+# 什么是 DaemonSet: 确保每个节点上恰好运行一个 Pod 副本
+#   适合场景: 日志采集、监控 Agent、网络代理（每个节点都需要）
+#   对比 Deployment: Deployment 是按副本数调度，DaemonSet 是按节点数调度
+#
+# 为什么用 Fluentd 而不是 Filebeat:
+#   两者都可以，Fluentd 插件生态更丰富，支持更多输出目标
+#
+# 数据流向:
+#   容器日志文件 (/var/lib/docker/containers/*/*.log)
+#     -> Fluentd 读取并解析
+#     -> 发送到 Elasticsearch (http://宿主机IP:9200)
+#     -> Kibana 可视化查询
+#
+# 用法:
+#   kubectl apply -f fluentd-daemonset.yaml
+#   kubectl get daemonset -n kube-system fluentd
+# ============================================================================
+
+# ---------- ServiceAccount: 给 Fluentd 一个"身份" ----------
+# 为什么需要: K8s 的 RBAC（基于角色的访问控制）要求每个 Pod 关联一个 ServiceAccount
+#             没有 ServiceAccount，Fluentd 无法调用 K8s API 获取 Pod 元数据
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fluentd           # ServiceAccount 的名字
+  namespace: kube-system  # 放在 kube-system 命名空间（系统组件惯例）
+
+---
+# ---------- ClusterRole: 定义 Fluentd 能做什么 ----------
+# 为什么用 ClusterRole 而不是 Role:
+#   ClusterRole 是集群级别的，可以访问所有命名空间的资源
+#   Role 只能访问单个命名空间，Fluentd 需要读取所有 Pod 的元数据
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fluentd
+# rules: 权限规则列表
+rules:
+  # apiGroups: [""] 表示核心 API 组（Pod、Namespace 等）
+  - apiGroups: [""]
+    # resources: 可以访问的资源类型
+    resources: ["pods", "namespaces"]
+    # verbs: 可以执行的操作（get=获取详情, list=列表, watch=监听变更）
+    verbs: ["get", "list", "watch"]
+
+---
+# ---------- ClusterRoleBinding: 把权限"绑定"给 Fluentd ----------
+# 作用: 将上面的 ClusterRole 授权给 fluentd ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fluentd
+# roleRef: 引用哪个角色
+roleRef:
+  kind: ClusterRole
+  name: fluentd           # 引用上面创建的 ClusterRole
+  apiGroup: rbac.authorization.k8s.io
+# subjects: 授权给谁
+subjects:
+  - kind: ServiceAccount
+    name: fluentd         # 授权给 fluentd ServiceAccount
+    namespace: kube-system
+
+---
+# ---------- DaemonSet: 在每个节点上运行 Fluentd ----------
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluentd
+  namespace: kube-system
+spec:
+  # 选择器: 匹配标签 name=fluentd 的 Pod
+  selector:
+    matchLabels:
+      name: fluentd
+  template:
+    metadata:
+      labels:
+        name: fluentd
+    spec:
+      # 使用上面创建的 ServiceAccount，获得 API 访问权限
+      serviceAccountName: fluentd
+      containers:
+        - name: fluentd
+          # 镜像: 官方 Fluentd K8s DaemonSet 镜像，内置 ES 输出插件
+          image: fluent/fluentd-kubernetes-daemonset:v1.16-debian-elasticsearch-1
+          # env: 环境变量，配置 Fluentd 连接到 ES
+          env:
+            # ES 主机地址: 使用 setup-env.sh 检测到的 Docker 网关地址
+            # 为什么不用 elasticsearch:9200: Fluentd 在 K8s 内部，ES 在 Docker Compose 外部
+            # K8s Pod 可以通过宿主机网关访问外部服务
+            - name: FLUENT_ELASTICSEARCH_HOST
+              value: "${DOCKER_GATEWAY}"
+            - name: FLUENT_ELASTICSEARCH_PORT
+              value: "9200"
+            - name: FLUENT_ELASTICSEARCH_SCHEME
+              value: "http"           # 本地用 HTTP，生产用 HTTPS
+            # 缓冲配置: 使用文件缓冲，防止 ES 短暂不可用时丢失日志
+            - name: FLUENT_ELASTICSEARCH_BUFFER_TYPE
+              value: "file"
+            - name: FLUENT_ELASTICSEARCH_BUFFER_PATH
+              value: "/var/log/fluentd-buffer"
+          # volumeMounts: 把宿主机的目录挂载到容器内
+          volumeMounts:
+            # 挂载 /var/log: 读取系统日志（如 /var/log/syslog）
+            - name: varlog
+              mountPath: /var/log
+            # 挂载 /var/lib/docker/containers: 读取 Docker 容器日志文件
+            # 这是容器日志的实际存储位置，Fluentd 从这里采集
+            - name: dockercontainers
+              mountPath: /var/lib/docker/containers
+              readOnly: true          # 只读，防止误删日志
+            # 挂载缓冲目录: 存放文件缓冲数据
+            - name: buffer
+              mountPath: /var/log/fluentd-buffer
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+      # volumes: 定义宿主机目录（hostPath 类型）
+      volumes:
+        - name: varlog
+          hostPath:
+            path: /var/log            # 宿主机的 /var/log 目录
+        - name: dockercontainers
+          hostPath:
+            path: /var/lib/docker/containers  # Docker 容器日志目录
+        - name: buffer
+          hostPath:
+            path: /var/log/fluentd-buffer     # 缓冲目录（需要提前创建或自动创建）

@@ -1,0 +1,32 @@
+# Git
+.git
+.gitignore
+
+# 文档
+*.md
+LICENSE
+
+# 脚本和配置
+scripts/
+*.sh
+Makefile
+
+# 敏感信息
+.env
+alertmanager.yml
+
+# 备份和日志
+backups/
+*.log
+diagnosis-*/
+
+# IDE
+.idea/
+.vscode/
+
+# Terraform
+terraform/
+*.tfstate
+
+# Helm 打包
+helm-charts/*.tgz

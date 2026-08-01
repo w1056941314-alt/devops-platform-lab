@@ -1,0 +1,28 @@
+# 文件: alertmanager.yml.example
+# 作用: Alertmanager 邮件配置模板，可上传到 Git 仓库
+# 复制模板为真实配置文件: cp alertmanager.yml.example alertmanager.yml
+# 编辑真实配置文件，把占位符换成真实信息
+
+global:
+  smtp_smarthost: 'smtp.qq.com:465'
+  smtp_from: 'your_email@qq.com'
+  smtp_auth_username: 'your_email@qq.com'
+  smtp_auth_password: 'your_auth_code_here'
+  smtp_require_tls: true
+
+route:
+  group_by: ['alertname']
+  receiver: 'email-alert'
+
+receivers:
+  - name: 'email-alert'
+    email_configs:
+      - to: 'your_email@qq.com'
+        send_resolved: true
+
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname']

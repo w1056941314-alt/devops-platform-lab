@@ -1,0 +1,31 @@
+# ============================================================================
+# 文件: gitops/applications/dev.yaml
+# 作用: 开发环境的 ArgoCD Application
+#
+# 和生产的区别:
+#   - targetRevision: develop 分支（开发分支）
+#   - valueFiles: values.yaml（开发环境默认值）
+#   - namespace: dev（独立的命名空间）
+# ============================================================================
+
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: nginx-demo-dev
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/yourcompany/gitops-repo.git
+    targetRevision: develop           # 跟踪 develop 分支
+    path: helm-charts/nginx-demo
+    helm:
+      valueFiles:
+        - values.yaml                  # 使用开发环境默认值（replicas=1，资源限制低）
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: dev                    # 部署到 dev 命名空间
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

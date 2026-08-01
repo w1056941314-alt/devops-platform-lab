@@ -1,0 +1,77 @@
+# ============================================================================
+# 文件: deployment.yaml
+# 作用: Helm Chart 的 Deployment 模板
+#
+# 什么是模板:
+#   普通 YAML 是静态的，Helm 模板通过 {{ }} 语法注入动态值
+#   这样一套模板可以通过不同的 values 文件生成不同环境的配置
+#
+# 用法:
+#   helm template nginx-dev ./helm-charts/nginx-demo          # 查看生成的 YAML（不部署）
+#   helm install nginx-dev ./helm-charts/nginx-demo            # 部署到开发环境
+#   helm install nginx-prod ./helm-charts/nginx-demo -f values-production.yaml  # 生产环境
+# ============================================================================
+
+# API 版本和 Kind 是固定的，不需要模板化
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  # 名称: 使用 _helpers.tpl 中定义的 fullname 函数
+  # {{ include "nginx-demo.fullname" . }} 会生成如 "nginx-dev-nginx-demo"
+  name: {{ include "nginx-demo.fullname" . }}
+  # 标签: 使用 _helpers.tpl 中定义的 labels 函数
+  labels:
+    # nindent 4: 缩进 4 个空格，保持 YAML 格式正确
+    {{- include "nginx-demo.labels" . | nindent 4 }}
+spec:
+  # 副本数: 如果启用了 HPA（自动扩缩容），就不手动设置 replicas
+  # 因为 HPA 会自动管理副本数，两者冲突
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      # 选择器标签: 必须和 Pod 模板中的 labels 一致
+      {{- include "nginx-demo.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "nginx-demo.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        # ---------- 主容器: Nginx ----------
+        - name: nginx
+          # 镜像: 从 values.yaml 中读取仓库名和标签
+          # 生产环境可以覆盖为 harbor.yourcompany.com/nginx-demo:latest
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          # 镜像拉取策略: IfNotPresent（本地没有才拉取）、Always（总是拉取）、Never（只用本地）
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 80
+          # 存活探针: 从 values.yaml 读取配置，不同环境可以设置不同的探测间隔
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          # 就绪探针
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          # 资源限制: 从 values.yaml 读取，开发环境和生产环境可以设置不同值
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+        # ---------- Sidecar: 日志生成器（可选） ----------
+        # 如果 values.yaml 中 logGenerator.enabled = true 才创建
+        {{- if .Values.logGenerator.enabled }}
+        - name: log-generator
+          image: busybox:1.36
+          command: ["/bin/sh"]
+          args:
+            - -c
+            - |
+              while true; do
+                LEVEL=$(echo -e "INFO\nWARN\nERROR" | awk 'BEGIN{srand();}{print rand()" "$0}' | sort -k1 | head -1 | cut -f2)
+                TRACE_ID=$(cat /proc/sys/kernel/random/uuid)
+                echo "{"level":"$LEVEL","trace_id":"$TRACE_ID","msg":"处理请求","time":"$(date -Iseconds)"}"
+                sleep $((RANDOM % 5 + 1))
+              done
+          resources:
+            {{- toYaml .Values.logGenerator.resources | nindent 12 }}
+        {{- end }}

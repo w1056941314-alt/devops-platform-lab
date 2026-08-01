@@ -1,0 +1,30 @@
+# 敏感配置（含密码、授权码）
+.env
+alertmanager.yml
+
+# 日志和临时文件
+*.log
+diagnosis-*/
+
+# 备份文件
+backups/
+
+# Terraform 状态文件（含敏感信息）
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+
+# Helm 打包文件
+helm-charts/*.tgz
+helm-charts/*/charts/*.tgz
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

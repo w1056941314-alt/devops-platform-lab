@@ -1,0 +1,225 @@
+# ============================================================================
+# 文件: docker-compose.yml
+# 作用: 用 Docker Compose 管理所有"外部"基础设施服务
+#       这些服务跑在 K8s 集群外面，K8s 只跑业务应用
+#
+# 用法（按阶段启动，降低内存门槛）:
+#   docker compose --profile monitoring up -d    # Phase 1: 仅监控（4GB内存）
+#   docker compose --profile logging up -d         # Phase 2: 加日志（+2GB）
+#   docker compose --profile cicd up -d            # Phase 3: 加CI/CD（+2GB）
+#   docker compose --profile full up -d            # 全部启动（8GB+内存）
+#
+# 注意: 本配置包含数据持久化卷，容器删除后数据不会丢失
+#       但宿主机磁盘损坏仍会丢失，重要数据请定期 make backup
+#
+# 重要: ${HOME} 变量来自 .env 文件（由 setup-env.sh 自动生成）
+#       不要直接修改本文件中的路径，应修改 setup-env.sh 或 .env
+# ============================================================================
+
+version: "3.8"  # Docker Compose 文件格式版本，3.8 支持 profiles 功能
+
+services:
+  # ==========================================================================
+  # Phase 1: 监控体系（Prometheus + Grafana + Node Exporter）
+  # 内存需求: ~2GB
+  # 这是最重要的部分，建议所有初学者先跑通这个阶段
+  # ==========================================================================
+
+  # ---------- node-exporter: 采集宿主机的 CPU/内存/磁盘/网络指标 ----------
+  # 为什么需要: Prometheus 在容器里，无法直接看到宿主机的硬件信息
+  #             node-exporter 作为一个代理，把宿主机指标暴露给 Prometheus
+  node-exporter:
+    image: prom/node-exporter:v1.9.0  # 版本锁定，避免 latest 漂移导致不兼容
+    container_name: node-exporter      # 固定容器名，方便 docker logs node-exporter
+    restart: unless-stopped            # 宿主机重启后自动启动，除非手动 stop
+    profiles: ["monitoring", "full"]   # 属于 monitoring 阶段和 full 全量模式
+    ports:
+      - "9100:9100"                    # 把容器的 9100 端口映射到宿主机的 9100
+                                        # Prometheus 通过 http://node-exporter:9100 抓取数据
+    logging: &default-logging          # YAML 锚点，下面复用相同配置
+      driver: "json-file"              # 使用 JSON 格式记录日志（Docker 默认）
+      options:
+        max-size: "100m"               # 单个日志文件最大 100MB，防止磁盘占满
+        max-file: "3"                  # 最多保留 3 个日志文件，自动轮转
+
+  # ---------- prometheus: 监控数据的"中央仓库" ----------
+  # 作用: 定期从各个 target（node-exporter、kube-state-metrics）拉取指标数据
+  #       存储为时序数据库，支持 PromQL 查询语言
+  # 为什么放在 K8s 外面: 生产环境 Prometheus 通常部署在 K8s 内（通过 Operator）
+  #                     但本地学习放在外面更简单，不需要处理 K8s 内的网络发现
+  prometheus:
+    image: prom/prometheus:v3.2.0
+    container_name: prometheus
+    restart: unless-stopped
+    profiles: ["monitoring", "full"]
+    ports:
+      - "9090:9090"                    # Web UI 和 API 端口
+    volumes:
+      # 命名卷: 容器删除后数据还在，下次启动自动挂载
+      - prometheus_data:/prometheus
+      # 只读挂载配置文件（:ro = read-only，防止容器内误改）
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alert.rules.yml:/etc/prometheus/alert.rules.yml:ro
+    command:
+      # 告诉 Prometheus 配置文件在哪
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      # 时序数据存哪（对应上面的命名卷挂载点）
+      - '--storage.tsdb.path=/prometheus'
+      # 数据保留 7 天，防止磁盘无限增长
+      - '--storage.tsdb.retention.time=7d'
+    logging: *default-logging          # 复用上面定义的日志配置
+
+  # ---------- grafana: 把 Prometheus 的原始数据变成漂亮的图表 ----------
+  # 为什么不用 Prometheus 自带的图表: Prometheus 的图表功能很弱
+  # Grafana 支持拖拽式创建 Dashboard、变量、告警、分享
+  grafana:
+    image: grafana/grafana:11.5.0
+    container_name: grafana
+    restart: unless-stopped
+    profiles: ["monitoring", "full"]
+    ports:
+      - "3000:3000"                    # Web UI 端口
+    volumes:
+      - grafana_data:/var/lib/grafana   # 保存 Dashboard、数据源配置、用户设置
+    environment:
+      # 默认管理员账号（首次登录会强制要求改密码）
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      # 禁止用户自行注册（本地环境不需要多用户）
+      - GF_USERS_ALLOW_SIGN_UP=false
+    logging: *default-logging
+
+  # ---------- alertmanager: 告警的"路由器" ----------
+  # Prometheus 检测到异常后，把告警推送给 Alertmanager
+  # Alertmanager 负责: 去重、分组、路由（发给谁）、抑制（低级告警被高级告警压制）
+  alertmanager:
+    image: prom/alertmanager:v0.28.0
+    container_name: alertmanager
+    restart: unless-stopped
+    profiles: ["monitoring", "full"]
+    ports:
+      - "9093:9093"                    # Web UI 端口，可查看当前告警和静默规则
+    volumes:
+      # 从 alertmanager.yml 读取配置（由 setup-env.sh 自动生成）
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'  # 告警状态持久化路径
+    logging: *default-logging
+
+  # ==========================================================================
+  # Phase 2: 日志体系（Fluentd + Elasticsearch + Kibana）
+  # 内存需求: +2GB（ES 是内存大户）
+  # 注意: 如果内存不足，可以跳过这个阶段，先玩熟监控
+  # ==========================================================================
+
+  # ---------- elasticsearch: 日志的"数据库" ----------
+  # 为什么选 ES: 全文检索快、支持聚合分析、生态成熟
+  # 为什么单节点: 本地学习用，生产环境至少 3 节点集群
+  # 为什么禁用安全认证: 降低学习门槛，生产环境必须启用
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.0
+    container_name: es                 # 短名，方便 docker logs es
+    profiles: ["logging", "full"]
+    environment:
+      # 禁用安全认证（xpack），本地学习简化
+      # ⚠️ 生产环境绝对不要这样配！必须启用 TLS + 用户名密码
+      - xpack.security.enabled=false
+      # 单节点模式（不尝试发现其他 ES 节点）
+      - discovery.type=single-node
+      # JVM 堆内存: 512MB（本地低配），生产建议 2-4GB
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      # 禁用内存锁定检查（某些系统不支持）
+      - bootstrap.memory_lock=true
+    ulimits:
+      # 取消内存锁定限制（ES 需要锁定内存防止被 swap 出去）
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "9200:9200"                    # REST API 端口
+    volumes:
+      - es_data:/usr/share/elasticsearch/data  # 日志索引持久化
+    restart: unless-stopped
+    logging: *default-logging
+
+  # ---------- kibana: ES 的"可视化界面" ----------
+  # 作用: 搜索日志、创建图表、配置索引模式
+  # 为什么启动慢: 需要等 ES 完全就绪后才能连接
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.17.0
+    container_name: kb
+    profiles: ["logging", "full"]
+    ports:
+      - "5601:5601"
+    environment:
+      # 告诉 Kibana ES 在哪（Docker Compose 内通过服务名解析）
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - XPACK_SECURITY_ENABLED=false
+    restart: unless-stopped
+    depends_on:
+      - elasticsearch                   # 确保 ES 先启动（但不保证 ES 已就绪）
+    logging: *default-logging
+
+  # ==========================================================================
+  # Phase 3: CI/CD 体系（Jenkins + Registry）
+  # 内存需求: +2GB（Jenkins 启动时很吃内存）
+  # ==========================================================================
+
+  # ---------- registry: 本地 Docker 镜像仓库 ----------
+  # 为什么需要: Jenkins 构建的镜像要推送到仓库，K8s 才能拉取部署
+  # 为什么用 HTTP 不是 HTTPS: 本地简化，生产必须用 Harbor + TLS
+  # ⚠️ 无认证: 任何人能推送/拉取，不要暴露到公网
+  registry:
+    image: registry:2
+    container_name: registry
+    profiles: ["cicd", "full"]
+    ports:
+      - "5000:5000"                    # 仓库 API 端口
+    restart: unless-stopped
+    logging: *default-logging
+
+  # ---------- jenkins: CI/CD 的"指挥中心" ----------
+  # 作用: 代码提交后自动构建镜像、运行测试、推送到仓库、部署到 K8s
+  # 为什么挂载 docker.sock: Jenkins 容器内需要执行 docker build/push
+  # ⚠️ 安全风险: 等同于给 Jenkins 完整的宿主机 Docker 权限
+  #    生产环境应改用 Kaniko 或 Jenkins Kubernetes Agent
+  jenkins:
+    image: jenkins/jenkins:lts-jdk21
+    container_name: jenkins
+    profiles: ["cicd", "full"]
+    ports:
+      - "8081:8080"                    # Web UI（宿主机 8081 避免和某些服务冲突）
+      - "50000:50000"                  # Jenkins Agent 通信端口
+    volumes:
+      - jenkins_home:/var/jenkins_home  # 插件、任务配置、构建历史持久化
+      # 挂载宿主机 Docker socket，让 Jenkins 容器内能执行 docker 命令
+      - /var/run/docker.sock:/var/run/docker.sock
+      # 挂载示例应用代码（只读，Jenkins 构建时读取）
+      # ${HOME} 来自 .env 文件，由 setup-env.sh 自动生成
+      - ${HOME}/myapp:${HOME}/myapp:ro
+      # 挂载项目目录（只读，Jenkinsfile 读取 .env 中的 DOCKER_GATEWAY）
+      - ${HOME}/monitoring-lab:${HOME}/monitoring-lab:ro
+      # 挂载 kubeconfig，让 Jenkins 能操作 K8s 集群
+      # 使用 ${HOME}/.kube 而非硬编码 /root/.kube，适配非 root 用户
+      - ${HOME}/.kube:/root/.kube:ro
+      # 挂载 kubectl 二进制，Jenkins 容器内可能没有
+      - /usr/local/bin/kubectl:/usr/local/bin/kubectl:ro
+    restart: unless-stopped
+    logging: *default-logging
+
+# ============================================================================
+# 命名卷（Named Volumes）
+# 作用: 容器删除后数据不丢失，下次 docker compose up 自动恢复
+# 注意: 卷存在宿主机 /var/lib/docker/volumes/ 下，不是项目目录内
+#       要备份: make backup    要彻底删除: make clean
+# ============================================================================
+volumes:
+  prometheus_data:
+    name: devops_prometheus_data       # 显式命名，避免目录名影响
+  grafana_data:
+    name: devops_grafana_data
+  es_data:
+    name: devops_es_data
+  jenkins_home:
+    name: devops_jenkins_home
